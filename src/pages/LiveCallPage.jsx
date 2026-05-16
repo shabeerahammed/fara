@@ -6,25 +6,36 @@ import Card from '../components/ui/Card';
 import Badge from '../components/ui/Badge';
 import ConfidenceBar from '../components/ui/ConfidenceBar';
 
-// ─── OLLAMA CONFIG ────────────────────────────────────────────────────────────
-const OLLAMA_URL = 'http://localhost:11434/api/generate';
-const OLLAMA_MODEL = 'llama3.2';
-const ANALYSIS_INTERVAL_MS = 5000; // re-analyze every 5 seconds
+// ─── CONFIG ───────────────────────────────────────────────────────────────────
+const OLLAMA_URL = import.meta.env.VITE_OLLAMA_URL ?? 'http://localhost:11434/api/generate';
+const OLLAMA_MODEL = import.meta.env.VITE_OLLAMA_MODEL ?? 'llama3.2';
+const ANALYSIS_INTERVAL = 5000; // ms between Ollama polls
 
-function buildAnalysisPrompt(transcript) {
-  return `You are a call center compliance AI. Analyze this live call transcript and respond ONLY with a valid JSON object. No extra text, no markdown, no explanation.
+// ─── ACTION META ──────────────────────────────────────────────────────────────
+const ACTION_CONFIG = {
+  ISSUE_REFUND: { label: 'Process Quick Refund', color: '#185FA5' },
+  OFFER_RETENTION: { label: 'Send 20% Loyalty Offer', color: '#854F0B' },
+  ESCALATE: { label: 'Escalate to Manager', color: '#A32D2D' },
+  EMPATHIZE: { label: 'Log Empathy Interaction', color: '#993556' },
+  PROVIDE_INFO: { label: 'Pull Account Info', color: '#3B6D11' },
+  NONE: { label: 'No Action Required', color: '#5F5E5A' },
+};
+
+// ─── OLLAMA HELPERS ───────────────────────────────────────────────────────────
+function buildPrompt(transcript) {
+  return `You are a call center compliance AI. Analyze this transcript and respond ONLY with valid JSON — no markdown, no extra text.
 
 Transcript: "${transcript}"
 
-Respond with ONLY this JSON:
+JSON schema:
 {
-  "intent": "REFUND_REQUEST" | "CANCELLATION" | "COMPLAINT" | "INQUIRY" | "BILLING" | "TECHNICAL" | "OTHER",
-  "sentiment": "POSITIVE" | "NEUTRAL" | "NEGATIVE" | "VERY_NEGATIVE",
-  "confidence": <number 0.0 to 1.0>,
-  "summary": "<1-2 sentence summary>",
-  "flags": ["PROFANITY" | "HIGH_URGENCY" | "ESCALATION_NEEDED" | "LEGAL_THREAT" | "POLICY_VIOLATION"],
-  "agentScript": "<suggested response for the agent to say next>",
-  "agentAction": "ISSUE_REFUND" | "OFFER_RETENTION" | "ESCALATE" | "EMPATHIZE" | "PROVIDE_INFO" | "NONE"
+  "intent": "REFUND_REQUEST"|"CANCELLATION"|"COMPLAINT"|"INQUIRY"|"BILLING"|"TECHNICAL"|"OTHER",
+  "sentiment": "POSITIVE"|"NEUTRAL"|"NEGATIVE"|"VERY_NEGATIVE",
+  "confidence": <0.0–1.0>,
+  "summary": "<1–2 sentences>",
+  "flags": ["PROFANITY"|"HIGH_URGENCY"|"ESCALATION_NEEDED"|"LEGAL_THREAT"|"POLICY_VIOLATION"],
+  "agentScript": "<what the agent should say next>",
+  "agentAction": "ISSUE_REFUND"|"OFFER_RETENTION"|"ESCALATE"|"EMPATHIZE"|"PROVIDE_INFO"|"NONE"
 }`;
 }
 
@@ -33,96 +44,69 @@ async function queryOllama(transcript) {
     const res = await fetch(OLLAMA_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: OLLAMA_MODEL,
-        prompt: buildAnalysisPrompt(transcript),
-        stream: false,
-      }),
+      body: JSON.stringify({ model: OLLAMA_MODEL, prompt: buildPrompt(transcript), stream: false }),
     });
     if (!res.ok) return null;
     const data = await res.json();
-    const jsonMatch = (data.response || '').match(/\{[\s\S]*\}/);
-    if (!jsonMatch) return null;
-    return JSON.parse(jsonMatch[0]);
+    const match = (data.response ?? '').match(/\{[\s\S]*\}/);
+    return match ? JSON.parse(match[0]) : null;
   } catch {
     return null;
   }
 }
 
-// Fallback mock when Ollama isn't reachable
-function getMockAnalysis(transcript) {
+// Keyword fallback — only used when Ollama is unreachable
+function mockAnalysis(transcript) {
   const t = transcript.toLowerCase();
-  if (t.includes('refund') || t.includes('money back')) {
-    return {
-      intent: 'REFUND_REQUEST', sentiment: 'NEGATIVE', confidence: 0.91,
-      summary: 'Customer requesting a refund for a recent purchase.',
-      flags: ['HIGH_URGENCY'],
-      agentScript: "I completely understand. Let me process that refund for you right now and ensure this doesn't happen again.",
-      agentAction: 'ISSUE_REFUND',
-    };
-  }
-  if (t.includes('cancel')) {
-    return {
-      intent: 'CANCELLATION', sentiment: 'NEGATIVE', confidence: 0.85,
-      summary: 'Customer considering or requesting cancellation of their subscription.',
-      flags: [],
-      agentScript: "Before you go, I'd love to offer you an exclusive 20% loyalty discount as a thank you for being with us.",
-      agentAction: 'OFFER_RETENTION',
-    };
-  }
-  if (t.includes('angry') || t.includes('unacceptable') || t.includes('terrible')) {
-    return {
-      intent: 'COMPLAINT', sentiment: 'VERY_NEGATIVE', confidence: 0.88,
-      summary: 'Customer expressing strong dissatisfaction.',
-      flags: ['HIGH_URGENCY', 'ESCALATION_NEEDED'],
-      agentScript: 'I hear you and I sincerely apologize. Your experience is not what we stand for. Let me escalate this right now.',
-      agentAction: 'ESCALATE',
-    };
-  }
-  return {
-    intent: 'INQUIRY', sentiment: 'NEUTRAL', confidence: 0.78,
-    summary: 'Customer making a general inquiry.',
-    flags: [],
-    agentScript: 'Of course! Let me look into that for you right away.',
-    agentAction: 'PROVIDE_INFO',
-  };
+  if (t.includes('refund') || t.includes('money back'))
+    return { intent: 'REFUND_REQUEST', sentiment: 'NEGATIVE', confidence: 0.91, summary: 'Customer requesting a refund.', flags: ['HIGH_URGENCY'], agentScript: "I completely understand — let me process that refund right now.", agentAction: 'ISSUE_REFUND' };
+  if (t.includes('cancel'))
+    return { intent: 'CANCELLATION', sentiment: 'NEGATIVE', confidence: 0.85, summary: 'Customer considering cancellation.', flags: [], agentScript: "Before you go, I'd love to offer you an exclusive 20% loyalty discount.", agentAction: 'OFFER_RETENTION' };
+  if (t.includes('angry') || t.includes('unacceptable') || t.includes('terrible'))
+    return { intent: 'COMPLAINT', sentiment: 'VERY_NEGATIVE', confidence: 0.88, summary: 'Customer expressing strong dissatisfaction.', flags: ['HIGH_URGENCY', 'ESCALATION_NEEDED'], agentScript: "I sincerely apologize — let me escalate this immediately.", agentAction: 'ESCALATE' };
+  return { intent: 'INQUIRY', sentiment: 'NEUTRAL', confidence: 0.78, summary: 'Customer making a general inquiry.', flags: [], agentScript: "Of course! Let me look into that for you right away.", agentAction: 'PROVIDE_INFO' };
 }
 
-// ─── ACTION CONFIG ────────────────────────────────────────────────────────────
-const ACTION_CONFIG = {
-  ISSUE_REFUND:     { label: 'Process Quick Refund',    color: '#185FA5', bg: '#E6F1FB' },
-  OFFER_RETENTION:  { label: 'Send 20% Loyalty Offer',  color: '#854F0B', bg: '#FAEEDA' },
-  ESCALATE:         { label: 'Escalate to Manager',     color: '#A32D2D', bg: '#FCEBEB' },
-  EMPATHIZE:        { label: 'Log Empathy Interaction', color: '#993556', bg: '#FBEAF0' },
-  PROVIDE_INFO:     { label: 'Pull Account Info',       color: '#3B6D11', bg: '#EAF3DE' },
-  NONE:             { label: 'No Action Required',      color: '#5F5E5A', bg: '#F1EFE8' },
-};
+// ─── SMALL ATOMS ─────────────────────────────────────────────────────────────
+
+function RecordingDot({ active }) {
+  return (
+    <span style={{
+      display: 'inline-block', width: 8, height: 8, borderRadius: '50%', flexShrink: 0,
+      background: active ? '#ef4444' : 'var(--border-bright)',
+      animation: active ? 'pulse 2s infinite' : 'none',
+    }} />
+  );
+}
+
+function SectionLabel({ children }) {
+  return (
+    <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.07em', color: 'var(--text-secondary)', marginBottom: 10 }}>
+      {children}
+    </div>
+  );
+}
 
 // ─── AGENT ASSIST PANEL ───────────────────────────────────────────────────────
-function AgentAssistPanel({ analysis, isAnalyzing, ollamaStatus }) {
-  const [actionDone, setActionDone] = useState(null);
+function AgentAssistPanel({ analysis, isAnalyzing, ollamaStatus, onAction }) {
+  const [actionLogged, setActionLogged] = useState(null);
+  useEffect(() => { setActionLogged(null); }, [analysis]);
 
-  // Reset action button when new analysis arrives
-  useEffect(() => { setActionDone(null); }, [analysis]);
+  if (isAnalyzing) return (
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, padding: '18px 0' }}>
+      <RefreshCw size={15} color="var(--text-muted)" style={{ animation: 'spin 1s linear infinite' }} />
+      <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Analyzing with {OLLAMA_MODEL}…</span>
+    </div>
+  );
 
-  if (isAnalyzing) {
-    return (
-      <div style={{ padding: '12px 0', display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'center' }}>
-        <RefreshCw size={16} color="var(--text-muted)" style={{ animation: 'spin 1s linear infinite' }} />
-        <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Llama 3 is analyzing...</span>
-      </div>
-    );
-  }
+  if (!analysis) return (
+    <p style={{ margin: 0, fontSize: 13, color: 'var(--text-muted)', fontStyle: 'italic' }}>
+      Awaiting transcript data…
+    </p>
+  );
 
-  if (!analysis) {
-    return (
-      <div style={{ fontSize: 13, color: 'var(--text-muted)', fontStyle: 'italic' }}>
-        Awaiting transcript data...
-      </div>
-    );
-  }
-
-  const actionCfg = ACTION_CONFIG[analysis.agentAction] || ACTION_CONFIG.NONE;
+  const action = ACTION_CONFIG[analysis.agentAction] ?? ACTION_CONFIG.NONE;
+  const isOk = ollamaStatus === 'ok';
 
   return (
     <AnimatePresence mode="wait">
@@ -131,24 +115,21 @@ function AgentAssistPanel({ analysis, isAnalyzing, ollamaStatus }) {
         initial={{ opacity: 0, y: 6 }}
         animate={{ opacity: 1, y: 0 }}
         exit={{ opacity: 0 }}
-        transition={{ duration: 0.25 }}
-        style={{ display: 'flex', flexDirection: 'column', gap: 14 }}
+        transition={{ duration: 0.2 }}
+        style={{ display: 'flex', flexDirection: 'column', gap: 12 }}
       >
-        {/* Ollama status pill */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <div style={{
-            width: 6, height: 6, borderRadius: '50%',
-            background: ollamaStatus === 'ok' ? '#639922' : '#BA7517',
-          }} />
+        {/* Ollama connection pill */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+          <span style={{ width: 6, height: 6, borderRadius: '50%', background: isOk ? '#639922' : '#BA7517', flexShrink: 0 }} />
           <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-            {ollamaStatus === 'ok' ? 'Ollama · Llama 3 connected' : 'Demo mode (Ollama not detected)'}
+            {isOk ? `Ollama · ${OLLAMA_MODEL}` : 'Demo mode — Ollama not detected'}
           </span>
         </div>
 
         {/* AI Summary */}
         {analysis.summary && (
           <div style={{
-            background: 'var(--bg-secondary)', borderRadius: 6, padding: '10px 12px',
+            background: 'var(--bg-secondary)', borderRadius: 6, padding: '9px 11px',
             fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.6,
             borderLeft: '3px solid var(--accent-blue)',
           }}>
@@ -156,13 +137,13 @@ function AgentAssistPanel({ analysis, isAnalyzing, ollamaStatus }) {
           </div>
         )}
 
-        {/* Suggested Script */}
+        {/* Suggested script */}
         <div>
-          <div style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 600, marginBottom: 6, letterSpacing: '0.04em' }}>
+          <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.06em', color: 'var(--text-muted)', marginBottom: 5 }}>
             SUGGESTED SCRIPT
           </div>
           <div style={{
-            background: 'var(--bg-secondary)', borderRadius: 6, padding: '10px 12px',
+            background: 'var(--bg-secondary)', borderRadius: 6, padding: '9px 11px',
             fontSize: 13, color: 'var(--text-primary)', lineHeight: 1.7,
             fontStyle: 'italic', borderLeft: '3px solid #639922',
           }}>
@@ -170,29 +151,25 @@ function AgentAssistPanel({ analysis, isAnalyzing, ollamaStatus }) {
           </div>
         </div>
 
-        {/* Action Button */}
+        {/* Action button */}
         {analysis.agentAction !== 'NONE' && (
           <motion.button
             whileHover={{ scale: 1.02 }}
             whileTap={{ scale: 0.97 }}
             onClick={() => {
-              setActionDone(actionCfg.label);
-              socketService.socket.emit('call:action:taken', {
-                action: analysis.agentAction,
-                intent: analysis.intent,
-                timestamp: Date.now(),
-              });
+              setActionLogged(action.label);
+              onAction(analysis.agentAction, analysis.intent);
             }}
             style={{
-              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-              padding: '10px 14px', borderRadius: 8, border: 'none', cursor: 'pointer',
-              background: actionDone ? '#EAF3DE' : actionCfg.color,
-              color: actionDone ? '#3B6D11' : 'white',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7,
+              padding: '9px 14px', borderRadius: 8, border: 'none', cursor: 'pointer',
               fontSize: 13, fontWeight: 600, transition: 'background 0.2s',
+              background: actionLogged ? '#EAF3DE' : action.color,
+              color: actionLogged ? '#3B6D11' : '#fff',
             }}
           >
-            <Zap size={14} />
-            {actionDone ? `✓ ${actionDone} logged` : actionCfg.label}
+            <Zap size={13} />
+            {actionLogged ? `✓ ${actionLogged} logged` : action.label}
           </motion.button>
         )}
       </motion.div>
@@ -200,25 +177,28 @@ function AgentAssistPanel({ analysis, isAnalyzing, ollamaStatus }) {
   );
 }
 
-// ─── MAIN PAGE ────────────────────────────────────────────────────────────────
+// ─── PAGE ─────────────────────────────────────────────────────────────────────
 export default function LiveCallPage() {
+  // Call state
   const [isRecording, setIsRecording] = useState(false);
+  const [callId, setCallId] = useState(null);
+  // Content state
   const [transcript, setTranscript] = useState('');
   const [flags, setFlags] = useState([]);
-  const [aiAnalysis, setAiAnalysis] = useState(null);       // from socket (existing)
-  const [agentAnalysis, setAgentAnalysis] = useState(null); // from Ollama
+  const [socketAnalysis, setSocketAnalysis] = useState(null); // backend Ollama via socket
+  const [agentAnalysis, setAgentAnalysis] = useState(null); // frontend Ollama direct
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [ollamaStatus, setOllamaStatus] = useState('unknown');
-  const [callId, setCallId] = useState(null);
 
+  // Refs — never trigger re-renders
   const mediaRecorderRef = useRef(null);
   const streamRef = useRef(null);
   const recognitionRef = useRef(null);
-  const analyzeTimerRef = useRef(null);
-  const latestTranscript = useRef('');
+  const pollRef = useRef(null);
+  const liveTranscript = useRef(''); // always current, no closure staleness
 
-  // ── Ollama analysis ──
-  const runOllamaAnalysis = useCallback(async (text) => {
+  // ── Ollama analysis runner ─────────────────────────────────────────────────
+  const runAnalysis = useCallback(async (text) => {
     if (!text || text.length < 20) return;
     setIsAnalyzing(true);
     try {
@@ -226,42 +206,34 @@ export default function LiveCallPage() {
       if (result) {
         setOllamaStatus('ok');
         setAgentAnalysis(result);
-        // Also push ollama flags back into existing flag system
-        if (result.flags?.length) {
-          result.flags.forEach(f => {
-            setFlags(prev => [...new Set([...prev, f])]);
-          });
-        }
+        result.flags?.forEach(f => setFlags(prev => [...new Set([...prev, f])]));
       } else {
         setOllamaStatus('mock');
-        setAgentAnalysis(getMockAnalysis(text));
+        setAgentAnalysis(mockAnalysis(text));
       }
     } catch {
       setOllamaStatus('mock');
-      setAgentAnalysis(getMockAnalysis(text));
+      setAgentAnalysis(mockAnalysis(text));
     } finally {
       setIsAnalyzing(false);
     }
   }, []);
 
-  // ── Socket setup (existing pattern preserved) ──
+  // ── Socket listeners ───────────────────────────────────────────────────────
   useEffect(() => {
     socketService.connect();
 
-    socketService.socket.on('call:stream:transcript', (data) => {
-      // Only use the backend transcript if the local SpeechRecognition hasn't picked up anything yet,
-      // or if the local recognition is unsupported.
-      if (!recognitionRef.current || !latestTranscript.current) {
-        setTranscript(data.text);
-        latestTranscript.current = data.text;
+    socketService.socket.on('call:stream:transcript', ({ text }) => {
+      // Backend transcript is fallback — prefer local SpeechRecognition
+      if (!liveTranscript.current) {
+        setTranscript(text);
+        liveTranscript.current = text;
       }
     });
-    socketService.socket.on('call:stream:analysis', (data) => {
-      setAiAnalysis(data);
-    });
-    socketService.socket.on('call:stream:flag', (data) => {
-      setFlags(prev => [...new Set([...prev, data.flag])]);
-    });
+    socketService.socket.on('call:stream:analysis', (data) => setSocketAnalysis(data));
+    socketService.socket.on('call:stream:flag', ({ flag }) =>
+      setFlags(prev => [...new Set([...prev, flag])])
+    );
 
     return () => {
       socketService.socket.off('call:stream:transcript');
@@ -270,263 +242,243 @@ export default function LiveCallPage() {
     };
   }, []);
 
-  // ── Start call ──
+  // ── Start call ─────────────────────────────────────────────────────────────
   const startCall = async () => {
-    // --- Existing: MediaRecorder → socket audio stream ---
+    // Reset all content state first
+    setTranscript('');
+    setFlags([]);
+    setSocketAnalysis(null);
+    setAgentAnalysis(null);
+    liveTranscript.current = '';
+
+    const newCallId = `LIVE-${Date.now()}`;
+    setCallId(newCallId);
+
+    // 1. MediaRecorder → socket → backend Whisper pipeline
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
 
-      const newCallId = `LIVE-${Date.now()}`;
-      setCallId(newCallId);
-      socketService.socket.emit('call:stream:start', { callId: newCallId });
+      const recorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = recorder;
 
-      const mediaRecorder = new MediaRecorder(stream);
-      mediaRecorderRef.current = mediaRecorder;
-
-      mediaRecorder.ondataavailable = async (e) => {
-        if (e.data.size > 0) {
-          const buffer = await e.data.arrayBuffer();
+      recorder.ondataavailable = async ({ data }) => {
+        if (data.size > 0)
           socketService.socket.emit('call:stream:audio', {
             callId: newCallId,
-            audioChunk: buffer,
-            mimeType: mediaRecorder.mimeType,
+            audioChunk: await data.arrayBuffer(),
+            mimeType: recorder.mimeType,
           });
-        }
       };
+      // Emit end after final chunk — prevents race condition
+      recorder.onstop = () => socketService.socket.emit('call:stream:end', { callId: newCallId });
 
-      mediaRecorder.onstop = () => {
-        // Emit end only after final chunk is sent (fixes race condition)
-        socketService.socket.emit('call:stream:end', { callId: newCallId });
-      };
-
-      mediaRecorder.start(3000);
+      socketService.socket.emit('call:stream:start', { callId: newCallId });
+      recorder.start(3000);
     } catch (err) {
-      console.error('MediaRecorder error:', err);
+      console.error('MediaRecorder failed:', err);
     }
 
-    // --- New: Web Speech API → local transcript for Ollama ---
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (SpeechRecognition) {
-      const recognition = new SpeechRecognition();
-      recognition.continuous = true;
-      recognition.interimResults = true;
-      recognition.lang = 'en-US';
-
-      recognition.onresult = (event) => {
-        let full = '';
-        for (let i = 0; i < event.results.length; i++) {
-          full += event.results[i][0].transcript + ' ';
-        }
-        const trimmed = full.trim();
-        // Only update local transcript if socket isn't providing one
-        if (!latestTranscript.current) {
-          setTranscript(trimmed);
-        }
-        latestTranscript.current = trimmed;
+    // 2. Web Speech API → local transcript for direct Ollama calls (Chrome/Edge)
+    const SR = window.SpeechRecognition ?? window.webkitSpeechRecognition;
+    if (SR) {
+      const rec = new SR();
+      rec.continuous = true;
+      rec.interimResults = true;
+      rec.lang = 'en-US';
+      rec.onresult = (event) => {
+        const text = Array.from(event.results).map(r => r[0].transcript).join(' ').trim();
+        setTranscript(text);
+        liveTranscript.current = text;
       };
-
-      recognition.onerror = (e) => console.warn('SpeechRecognition error:', e.error);
-      recognition.start();
-      recognitionRef.current = recognition;
-    } else {
-      console.warn('SpeechRecognition not available — Ollama will use socket transcript only');
+      rec.onerror = (e) => console.warn('SpeechRecognition:', e.error);
+      rec.start();
+      recognitionRef.current = rec;
     }
 
-    // --- Periodic Ollama analysis ---
-    analyzeTimerRef.current = setInterval(() => {
-      if (latestTranscript.current?.length > 20) {
-        runOllamaAnalysis(latestTranscript.current);
-      }
-    }, ANALYSIS_INTERVAL_MS);
+    // 3. Periodic Ollama analysis
+    pollRef.current = setInterval(() => {
+      if (liveTranscript.current.length > 20) runAnalysis(liveTranscript.current);
+    }, ANALYSIS_INTERVAL);
 
     setIsRecording(true);
-    setTranscript('');
-    setFlags([]);
-    setAiAnalysis(null);
-    setAgentAnalysis(null);
-    latestTranscript.current = '';
   };
 
-  // ── End call ──
+  // ── End call ───────────────────────────────────────────────────────────────
   const endCall = () => {
-    // Stop MediaRecorder (onstop will emit call:stream:end)
-    if (mediaRecorderRef.current?.state !== 'inactive') {
-      mediaRecorderRef.current?.stop();
-    }
-    // Stop microphone
+    if (mediaRecorderRef.current?.state !== 'inactive') mediaRecorderRef.current.stop();
     streamRef.current?.getTracks().forEach(t => t.stop());
     streamRef.current = null;
 
-    // Stop speech recognition
     recognitionRef.current?.stop();
     recognitionRef.current = null;
 
-    // Stop Ollama polling; run one final analysis
-    clearInterval(analyzeTimerRef.current);
-    if (latestTranscript.current?.length > 20) {
-      runOllamaAnalysis(latestTranscript.current);
-    }
+    clearInterval(pollRef.current);
+    runAnalysis(liveTranscript.current); // final analysis on end
 
     setIsRecording(false);
     setCallId(null);
   };
 
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => {
-      recognitionRef.current?.stop();
-      clearInterval(analyzeTimerRef.current);
-      streamRef.current?.getTracks().forEach(t => t.stop());
-    };
+  // ── Action handler (lifted out of AgentAssistPanel for socket access) ──────
+  const handleAction = useCallback((action, intent) => {
+    socketService.socket.emit('call:action:taken', { action, intent, callId, timestamp: Date.now() });
+  }, [callId]);
+
+  // ── Cleanup on unmount ─────────────────────────────────────────────────────
+  useEffect(() => () => {
+    recognitionRef.current?.stop();
+    clearInterval(pollRef.current);
+    streamRef.current?.getTracks().forEach(t => t.stop());
   }, []);
 
+  // ─── RENDER ───────────────────────────────────────────────────────────────
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 20, maxWidth: 900, margin: '0 auto' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 20, maxWidth: 1100, margin: '0 auto' }}>
 
-      {/* Header — unchanged from original */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+      {/* ── Header ── */}
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16 }}>
         <div>
-          <h2 style={{ margin: 0, fontSize: 24, fontWeight: 800, display: 'flex', alignItems: 'center', gap: 10 }}>
-            Live Call Governance <Activity size={20} color={isRecording ? '#ef4444' : 'var(--text-muted)'} />
+          <h2 style={{
+            margin: 0, fontSize: 22, fontWeight: 700, color: 'var(--text-primary)',
+            display: 'flex', alignItems: 'center', gap: 9,
+          }}>
+            Live Call Governance
+            <Activity size={18} color={isRecording ? '#ef4444' : 'var(--text-muted)'} />
           </h2>
-          <div style={{ fontSize: 13, color: 'var(--text-muted)', fontFamily: 'Inter, sans-serif', marginTop: 4 }}>
-            Real-time voice → Ollama Llama 3 → Agent Assist
-          </div>
+          <p style={{ margin: '4px 0 0', fontSize: 13, color: 'var(--text-muted)' }}>
+            Voice → Whisper → Ollama {OLLAMA_MODEL} → Agent Assist
+          </p>
         </div>
 
         <button
           onClick={isRecording ? endCall : startCall}
           style={{
-            display: 'flex', alignItems: 'center', gap: 8,
-            padding: '10px 20px', borderRadius: 8,
-            border: 'none', cursor: 'pointer', fontWeight: 600,
+            display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0,
+            padding: '10px 20px', borderRadius: 8, border: 'none',
+            cursor: 'pointer', fontWeight: 600, fontSize: 14,
             background: isRecording ? '#ef4444' : 'var(--accent-blue)',
-            color: 'white',
-            boxShadow: isRecording ? '0 4px 12px rgba(239,68,68,0.3)' : '0 4px 12px rgba(37,99,235,0.3)',
+            color: '#fff',
+            boxShadow: isRecording
+              ? '0 4px 12px rgba(239,68,68,0.3)'
+              : '0 4px 12px rgba(37,99,235,0.3)',
           }}
         >
-          {isRecording ? <Phone size={18} /> : <Mic size={18} />}
+          {isRecording ? <Phone size={16} /> : <Mic size={16} />}
           {isRecording ? 'End Call' : 'Start Live Call'}
         </button>
       </div>
 
-      {/* 3-column grid: Transcript | Governance + Analysis | Agent Assist */}
-      <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr', gap: 20 }}>
+      {/* ── Body: Transcript (left wide) + Right column ── */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 320px', gap: 20, alignItems: 'start' }}>
 
-        {/* Col 1: Live Transcript — unchanged */}
+        {/* LEFT — Transcript */}
         <Card>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
-            <div style={{
-              width: 8, height: 8, borderRadius: '50%',
-              background: isRecording ? '#ef4444' : 'var(--border-bright)',
-              animation: isRecording ? 'pulse 2s infinite' : 'none',
-            }} />
-            <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-secondary)' }}>
-              LIVE TRANSCRIPT {callId ? `(${callId})` : ''}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
+            <RecordingDot active={isRecording} />
+            <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.07em', color: 'var(--text-secondary)' }}>
+              LIVE TRANSCRIPT
             </span>
-          </div>
-
-          <div style={{
-            minHeight: 300, background: 'var(--bg-secondary)', borderRadius: 8, padding: 16,
-            fontFamily: 'Inter, sans-serif', fontSize: 14, color: 'var(--text-primary)',
-            lineHeight: 1.6, border: '1px solid var(--border)',
-          }}>
-            {transcript ? transcript : (
-              <span style={{ color: 'var(--text-muted)', fontStyle: 'italic' }}>
-                {isRecording ? 'Listening...' : 'Click "Start Live Call" and begin speaking.'}
+            {callId && (
+              <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>· {callId}</span>
+            )}
+            {isRecording && (
+              <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--text-muted)' }}>
+                Ollama every {ANALYSIS_INTERVAL / 1000}s
               </span>
             )}
           </div>
 
-          {isRecording && (
-            <div style={{ marginTop: 10, fontSize: 11, color: 'var(--text-muted)' }}>
-              Ollama analysis runs every {ANALYSIS_INTERVAL_MS / 1000}s
-            </div>
-          )}
+          <div style={{
+            minHeight: 300, background: 'var(--bg-secondary)', borderRadius: 8,
+            padding: 16, fontSize: 14, color: 'var(--text-primary)',
+            lineHeight: 1.7, border: '1px solid var(--border)',
+          }}>
+            {transcript || (
+              <span style={{ color: 'var(--text-muted)', fontStyle: 'italic' }}>
+                {isRecording ? 'Listening…' : 'Click "Start Live Call" and begin speaking.'}
+              </span>
+            )}
+          </div>
         </Card>
 
-        {/* Col 2: Governance Alerts + Real-time Analysis — unchanged */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+        {/* RIGHT — three stacked cards */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
 
+          {/* Governance Alerts */}
           <Card>
-            <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 12 }}>
-              GOVERNANCE ALERTS
-            </div>
+            <SectionLabel>GOVERNANCE ALERTS</SectionLabel>
             {flags.length > 0 ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
                 {flags.map(flag => (
                   <motion.div
                     key={flag}
-                    initial={{ opacity: 0, x: 10 }}
+                    initial={{ opacity: 0, x: 8 }}
                     animate={{ opacity: 1, x: 0 }}
                     style={{
-                      padding: 12, borderRadius: 6,
-                      background: 'rgba(239,68,68,0.1)',
-                      border: '1px solid rgba(239,68,68,0.3)',
                       display: 'flex', alignItems: 'center', gap: 8,
+                      padding: '8px 10px', borderRadius: 6,
+                      background: 'rgba(239,68,68,0.08)',
+                      border: '1px solid rgba(239,68,68,0.25)',
                     }}
                   >
-                    <AlertTriangle size={16} color="#ef4444" />
-                    <span style={{ fontSize: 13, color: '#ef4444', fontWeight: 600 }}>{flag}</span>
+                    <AlertTriangle size={13} color="#ef4444" />
+                    <span style={{ fontSize: 12, fontWeight: 600, color: '#ef4444' }}>{flag}</span>
                   </motion.div>
                 ))}
               </div>
             ) : (
-              <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>No compliance issues detected.</div>
+              <p style={{ margin: 0, fontSize: 13, color: 'var(--text-muted)' }}>No issues detected.</p>
             )}
           </Card>
 
+          {/* Real-time Analysis */}
           <Card>
-            <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 12 }}>
-              REAL-TIME ANALYSIS
-            </div>
-            {aiAnalysis ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            <SectionLabel>REAL-TIME ANALYSIS</SectionLabel>
+            {socketAnalysis ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 13 }}>
                 <div>
-                  <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>INTENT</div>
-                  <Badge variant={aiAnalysis.intent}>{aiAnalysis.intent}</Badge>
+                  <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 4 }}>INTENT</div>
+                  <Badge variant={socketAnalysis.intent}>{socketAnalysis.intent}</Badge>
                 </div>
                 <div>
-                  <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>SENTIMENT</div>
-                  <Badge variant={aiAnalysis.sentiment} dot>{aiAnalysis.sentiment}</Badge>
+                  <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 4 }}>SENTIMENT</div>
+                  <Badge variant={socketAnalysis.sentiment} dot>{socketAnalysis.sentiment}</Badge>
                 </div>
                 <div>
-                  <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>CONFIDENCE</div>
-                  <ConfidenceBar score={aiAnalysis.confidence} />
+                  <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 4 }}>CONFIDENCE</div>
+                  <ConfidenceBar score={socketAnalysis.confidence} />
                 </div>
               </div>
             ) : (
-              <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>Awaiting enough data...</div>
+              <p style={{ margin: 0, fontSize: 13, color: 'var(--text-muted)' }}>Awaiting data…</p>
             )}
           </Card>
 
+          {/* Agent Assist */}
+          <Card>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10 }}>
+              <Bot size={13} color="var(--text-secondary)" />
+              <SectionLabel style={{ marginBottom: 0 }}>AGENT ASSIST</SectionLabel>
+            </div>
+            <AgentAssistPanel
+              analysis={agentAnalysis}
+              isAnalyzing={isAnalyzing}
+              ollamaStatus={ollamaStatus}
+              onAction={handleAction}
+            />
+          </Card>
+
         </div>
-
-        {/* Col 3: Agent Assist (NEW) */}
-        <Card>
-          <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
-            <Bot size={14} />
-            AGENT ASSIST
-          </div>
-          <AgentAssistPanel
-            analysis={agentAnalysis}
-            isAnalyzing={isAnalyzing}
-            ollamaStatus={ollamaStatus}
-          />
-        </Card>
-
       </div>
 
       <style>{`
         @keyframes pulse {
-          0%   { transform: scale(1);   opacity: 1; }
-          50%  { transform: scale(1.5); opacity: 0.5; }
-          100% { transform: scale(1);   opacity: 1; }
+          0%, 100% { transform: scale(1);   opacity: 1; }
+          50%       { transform: scale(1.5); opacity: 0.5; }
         }
         @keyframes spin {
-          from { transform: rotate(0deg); }
-          to   { transform: rotate(360deg); }
+          to { transform: rotate(360deg); }
         }
       `}</style>
     </div>
