@@ -1,0 +1,145 @@
+# GovAI Backend — API Request Examples
+# Use with REST Client (VS Code), Insomnia, or curl
+
+@baseUrl = http://localhost:5000
+
+###
+# ── Health Check ─────────────────────────────────────────────
+GET {{baseUrl}}/health
+
+###
+# ── Upload audio file (curl) ─────────────────────────────────
+# curl -X POST http://localhost:5000/api/calls/upload \
+#   -F "audio=@/path/to/call.mp3" \
+#   -F "agent_id=AGENT-007" \
+#   -F "customer_id=CUST-1234" \
+#   -F "auto_process=true"
+
+# Expected Response:
+# {
+#   "success": true,
+#   "message": "Audio uploaded successfully",
+#   "data": {
+#     "call_id": "a1b2c3d4-e5f6-...",
+#     "audio_url": "https://govai-call-audio.s3.amazonaws.com/audio/...",
+#     "status": "QUEUED"
+#   }
+# }
+
+###
+# ── Trigger processing pipeline ──────────────────────────────
+POST {{baseUrl}}/api/calls/process
+Content-Type: application/json
+
+{
+  "call_id": "REPLACE_WITH_CALL_ID"
+}
+
+###
+# ── Get call logs (all) ──────────────────────────────────────
+GET {{baseUrl}}/api/calls/logs
+
+###
+# ── Get call logs — flagged only ─────────────────────────────
+GET {{baseUrl}}/api/calls/logs?governance=REVIEW_REQUIRED&page=1&limit=10
+
+###
+# ── Get call logs — blocked only ─────────────────────────────
+GET {{baseUrl}}/api/calls/logs?governance=BLOCKED
+
+###
+# ── Get single call detail ────────────────────────────────────
+GET {{baseUrl}}/api/calls/REPLACE_WITH_CALL_ID
+
+###
+# ── Create delivery order manually ───────────────────────────
+POST {{baseUrl}}/api/delivery/create
+Content-Type: application/json
+
+{
+  "call_id": "a1b2c3d4-...",
+  "customer_id": "CUST-9876",
+  "delivery_address": "45 Marina Tower, Dubai Marina, Dubai",
+  "contact_number": "050-123-4567",
+  "notes": "Leave at reception, ring bell",
+  "items": [
+    { "sku": "PROD-001", "qty": 2, "description": "Bluetooth Headphones" }
+  ]
+}
+
+###
+# ── Update delivery order status ──────────────────────────────
+PUT {{baseUrl}}/api/delivery/update
+Content-Type: application/json
+
+{
+  "order_id": "AUTO-ABCD1234",
+  "status": "SHIPPED",
+  "updated_by": "agent_007",
+  "note": "Dispatched via FedEx, tracking FX88234561"
+}
+
+###
+# ── Get all delivery orders ───────────────────────────────────
+GET {{baseUrl}}/api/delivery/orders
+
+###
+# ── Get flagged orders ────────────────────────────────────────
+GET {{baseUrl}}/api/delivery/orders?flagged=true
+
+###
+# ─────────────────────────────────────────────────────────────
+# EXPECTED FULL PIPELINE OUTPUT
+# (after upload + process completes)
+# ─────────────────────────────────────────────────────────────
+#
+# GET /api/calls/:callId →
+# {
+#   "call_id": "a1b2c3d4-...",
+#   "agent_id": "AGENT-007",
+#   "audio_url": "https://govai-call-audio.s3.us-east-1.amazonaws.com/audio/...",
+#   "transcript": "I need to change the delivery address for order 88234 to 45 Marina Tower...",
+#   "transcribe_status": "COMPLETED",
+#   "ai_result": {
+#     "intent": "CHANGE_ADDRESS",
+#     "entities": {
+#       "order_id": "88234",
+#       "new_address": "45 Marina Tower, Dubai Marina",
+#       "phone": "050-123-4567",
+#       "email": null
+#     },
+#     "summary": "Customer called to update delivery address for order 88234.",
+#     "confidence": 87
+#   },
+#   "governance_result": {
+#     "status": "APPROVED",
+#     "governance_score": 87,
+#     "flags": ["SENSITIVE_DATA_MASKED"],
+#     "masked_transcript": "I need to change the delivery address for order 88234 to [ADDRESS REDACTED]. My phone is [PHONE REDACTED]."
+#   },
+#   "delivery": {
+#     "status": "SENT",
+#     "webhook_sent": true,
+#     "sent_at": "2024-03-17T09:14:00.000Z",
+#     "response": { "delivery_id": "DEL-ABCD1234", "accepted": true }
+#   },
+#   "processing_status": "COMPLETED",
+#   "pipeline_stages": [
+#     { "stage": "UPLOAD",      "status": "SUCCESS", "duration_ms": 312 },
+#     { "stage": "TRANSCRIBE",  "status": "SUCCESS", "duration_ms": 843 },
+#     { "stage": "AI_ANALYSIS", "status": "SUCCESS", "duration_ms": 621 },
+#     { "stage": "GOVERNANCE",  "status": "SUCCESS", "duration_ms": 2   },
+#     { "stage": "DELIVERY",    "status": "SUCCESS", "duration_ms": 403 }
+#   ]
+# }
+#
+# GOVERNANCE BLOCKED example:
+# {
+#   "governance_result": {
+#     "status": "BLOCKED",
+#     "governance_score": 50,
+#     "flags": ["ABUSE_DETECTED", "HIGH_URGENCY"],
+#     "masked_transcript": "This is complete garbage and your company is a scam!"
+#   },
+#   "delivery": { "status": "BLOCKED", "webhook_sent": false }
+# }
